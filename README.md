@@ -212,3 +212,19 @@ let entry = <SimpleMap<T>>::take(&user);
 
 ```
 
+#### Tip
+
+看下下面几段代码
+
+```rust
+let new_value = original_value.checked_add(add_this_val).ok_or(Error::<T>::MaxValueReached)?;
+<SimpleMap<T>>::insert(&user, new_value);
+```
+
+```rust
+ensure!(<SimpleMap<T>>::contains_key(&account), Error::<T>::NoValueStored);
+let entry = <SimpleMap<T>>::get(account);
+```
+
+边界问题的检查要尤为注意。在处理数值类型的时候，历史上发生过美链攻击事件，利用了一个数值的溢出漏洞，后续造成不小的影响。同样的，很多场景下没有值和零值的概念也是不同的，对数值的处理我们要采用上面这种方式。
+
