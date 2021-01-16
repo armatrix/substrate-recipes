@@ -171,3 +171,44 @@ construct_runtime!(
 );
 ```
 
+### 存储map
+
+类似rust中的HashMap，存储一个key-value对。
+
+#### 声明一个StorageMap
+
+```rust
+// 这一类的声明是在SotrageMap trait下，不需要显示的声明 use， decl_storage!宏为我们做了这个
+decl_storage! {
+    trait Store for Module<T: Trait> as SimpleMap {
+        SimpleMap get(fn simple_map): map hasher(blake2_128_concat) T::AccountId => u32;
+    }
+}
+```
+
+- `SimpleMap` —— map的名字
+- `get(fn simple_map)` —— getter函数的名字
+- `: map hasher(blake2_128_concat)` —— 声明这个map所采用的Hash函数（BLAKE2定位是目前安全系数最高的哈希函数）
+- `T::AccountId => u32` —— map的key是Trait下的AccountId， value是u32类型的值
+
+#### API
+
+```rust
+// user 是一个accountID
+// insert 插入值  
+<SimpleMap<T>>::insert(&user, entry);
+
+// get 获取key对应的值 
+let entry = <SimpleMap<T>>::get(account);
+
+// take 获取key对应的值，并将其从map中删除 
+let entry = <SimpleMap<T>>::take(&user);
+
+// contains_key 判断一个key是否在map中 
+<SimpleMap<T>>::contains_key(&user);
+
+// remove 删除
+<SimpleMap<T>>::remove(&user);
+
+```
+
