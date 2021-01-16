@@ -95,3 +95,79 @@ pub fn say_hello(origin) -> DispatchResult {
 注意：
 
 使用WASM时，要额外增加初始化[RuntimeLogger](https://substrate.dev/rustdocs/v2.0.0/frame_support/debug/struct.RuntimeLogger.html)的步骤。
+
+### 事件
+
+外部调用函数执行，执行的结果可能是成功也可能是失败。我们需要一个标志来知晓调用的函数已经成功的执行。
+
+#### 声明事件
+
+我们还是通过trait来进行约束
+
+```rust
+pub trait Trait: system::Trait {
+    type Event: From<Event> + Into<<Self as system::Trait>::Event>;
+}
+```
+
+`From` 和 `Into` trait实现类型转换，对比`AsRef`和`AsMut`，`From`和`Into`返回的结果会获取参数所有权。
+
+在`decl_module!`宏中声明一个函数供后续调用
+
+```rust
+decl_module! {
+    pub struct Module<T: Trait> for enum Call where origin: T::Origin {
+
+        // 声明这个函数
+        fn deposit_event() = default;
+
+        // --snip--
+    }
+}
+```
+
+具体的事件内容通过`decl_event!`宏来展开
+
+```rust
+// 将事件与账户绑定
+decl_event!(
+    pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
+        EmitInput(AccountId, u32),
+    }
+);
+```
+
+注意0号块是不产生事件的，所以在创世块生成期间调用方法，方法中的event是不会广播出去的。
+
+#### 调用事件
+
+```rust
+Self::deposit_event(RawEvent::EmitInput(user, new_number));
+```
+
+#### Runtime 中的改动
+
+实现刚刚声明的trait
+
+```rust
+// 你也可以将Trait声明为某一模块下的具有更强标识性的命名，但很快随着拆包的明确，你会发现似乎这样更好
+impl <pkg>::Trait for Runtime {
+    type Event = Event;
+}
+```
+
+和可调用函数与存储（这时候不是还没介绍到存储？）一样，在`construct_runtime!`宏中，我们也要做些许修改
+
+```rust
+construct_runtime!(
+    pub enum Runtime where
+        Block = Block,
+        NodeBlock = opaque::Block,
+        UncheckedExtrinsic = UncheckedExtrinsic
+    {
+        // --snip--
+        GenericEvent: generic_event::{Module, Call, Event<T>},
+    }
+);
+```
+
