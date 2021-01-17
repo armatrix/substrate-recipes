@@ -488,3 +488,41 @@ fn remove_member(origin) -> DispatchResult {
 | 更新       | DB Writes: O(1) Encoding: O(n)                 | DB Reads: O(1) Encoding: O(1) DB Writes: O(1)  |
 | 迭代器操作 | DB Reads: O(1) Decoding: O(n) Processing: O(n) | DB Reads: O(n) Decoding: O(n) Processing: O(n) |
 
+### Double Maps
+
+我们怎么样对快速删除map[map]中的一组元素（map），这里面提供了`remove_prefix ` 方法。
+
+```rust
+pub type GroupIndex = u32; // this is Encode (which is necessary for double_map)
+
+decl_storage! {
+    trait Store for Module<T: Trait> as Dmap {
+        /// Member score (double map)
+        MemberScore get(fn member_score):
+            double_map hasher(blake2_128_concat) GroupIndex, hasher(blake2_128_concat) T::AccountId => u32;
+        /// Get group ID for member
+        GroupMembership get(fn group_membership): map hasher(blake2_128_concat) T::AccountId => GroupIndex;
+        /// For fast membership checks, see check-membership recipe for more details
+        AllMembers get(fn all_members): Vec<T::AccountId>;
+    }
+}
+```
+
+删除
+
+```rust
+fn remove_group_score(origin, group: GroupIndex) -> DispatchResult {
+    let member = ensure_signed(origin)?;
+
+    let group_id = <GroupMembership<T>>::get(member);
+    // check that the member is in the group
+    ensure!(group_id == group, "member isn't in the group, can't remove it");
+
+    // remove all group members from MemberScore at once
+    <MemberScore<T>>::remove_prefix(&group_id);
+
+    Self::deposit_event(RawEvent::RemoveGroup(group_id));
+    Ok(())
+}
+```
+
