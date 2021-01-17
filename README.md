@@ -600,3 +600,129 @@ pub struct SuperThing<Hash, Balance> {
 }
 ```
 
+### 环形缓冲队列
+
+这里我们给了一个列子，实现一个环形缓冲队列，后续我们可以参考这种范式来实现其他自己所需要的数据结构。
+
+#### 定义该数据的约束
+
+```rust
+pub trait RingBufferTrait<Item>
+where
+    Item: Codec + EncodeLike,
+{
+    // 存储所有的改动
+    fn commit(&self);
+    // 向队列中添加元素
+    fn push(&mut self, i: Item);
+    // 从队列中弹出元素
+    fn pop(&mut self) -> Option<Item>;
+    // 返回队列是否是空的
+    fn is_empty(&self) -> bool;
+}
+```
+
+#### 抽象数据结构
+
+```rust
+// 队列最长为2^16
+type DefaultIdx = u16;
+pub struct RingBufferTransient<Item, B, M, Index = DefaultIdx>
+where
+    Item: Codec + EncodeLike,  // 约束每个元素符合存储的数据需求
+    B: StorageValue<(Index, Index), Query = (Index, Index)>,  // 需要存储的范围
+    M: StorageMap<Index, Item, Query = Item>,  // 存储的对象
+    Index: Codec + EncodeLike + Eq + WrappingOps + From<u8> + Copy, // 队列的索引
+{
+    start: Index,
+    end: Index,
+    _phantom: PhantomData<(Item, B, M)>, //保证声明周期
+}
+```
+
+#### 构造方法
+
+```rust
+impl<Item, B, M, Index> RingBufferTransient<Item, B, M, Index>
+where
+    Item: Codec + EncodeLike,  // 约束每个元素符合存储的数据需求
+    B: StorageValue<(Index, Index), Query = (Index, Index)>,  // 需要存储的起讫
+    M: StorageMap<Index, Item, Query = Item>,  // 存储的对象
+    Index: Codec + EncodeLike + Eq + WrappingOps + From<u8> + Copy, // 队列的索引
+{
+    pub fn new() -> RingBufferTransient<Item, B, M, Index> {
+        let (start, end) = B::get();
+        RingBufferTransient {
+            start, 
+          	end, 
+         		_phantom: PhantomData,
+        }
+    }
+}
+```
+
+#### 实现RingBuffer trait
+
+```rust
+impl<Item, B, M, Index> RingBufferTrait<Item> for RingBufferTransient<Item, B, M, Index>
+where 
+    Item: Codec + EncodeLike,
+    B: StorageValue<(Index, Index), Query = (Index, Index)>,
+    M: StorageMap<Index, Item, Query = Item>,
+    Index: Codec + EncodeLike + Eq + WrappingOps + From<u8> + Copy,
+{
+    fn commit(&self) {
+        B::put((self.start, self.end));
+    }
+  
+  	fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+  
+    fn push(&mut self, item: Item) {
+      M::insert(self.end, item);
+      // 判断当前元素是不是队列的最后一个元素
+      let next_index = self.end.wrapping_add(1.into());
+      if next_index == self.start {
+        // 当前元素是最后一个元素
+        self.start = self.start.wrapping_add(1.into());
+      }
+      self.end = next_index;
+    }
+  
+    fn pop(&mut self) -> Option<Item> {
+          if self.is_empty() {
+              return None;
+          }
+          let item = M::take(self.start);
+          self.start = self.start.wrapping_add(1.into());
+
+          item.into()
+      }
+}
+```
+
+#### 实现Drop
+
+```rust
+impl<Item, B, M, Index> Drop for RingBufferTransient<Item, B, M, Index>
+where 
+    Item: Codec + EncodeLike,
+    B: StorageValue<(Index, Index), Query = (Index, Index)>,
+    M: StorageMap<Index, Item, Query = Item>,
+    Index: Codec + EncodeLike + Eq + WrappingOps + From<u8> + Copy,
+{
+    fn drop(&mut self) {
+        <Self as RingBufferTrait<Item>>::commit(self);
+    }
+}
+```
+
+
+
+
+
+
+
+
+
