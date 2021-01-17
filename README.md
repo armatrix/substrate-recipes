@@ -228,3 +228,135 @@ let entry = <SimpleMap<T>>::get(account);
 
 边界问题的检查要尤为注意。在处理数值类型的时候，历史上发生过美链攻击事件，利用了一个数值的溢出漏洞，后续造成不小的影响。同样的，很多场景下没有值和零值的概念也是不同的，对数值的处理我们要采用上面这种方式。
 
+### 缓存和存储调用
+
+降低存储调用的成本非常重要，我们可以通过rust的一些特性，来尽可能的减少对存储的调用。
+
+假定你已经比较熟悉所有权问题，这里要三个trait放在一起看，Sized, Clone和Copy
+
+#### Sized
+
+Rust中几乎所有的类型都是有固定大小的，u8占8个字节，Vec<T> 包含一个指向堆上可变大小缓冲区的指针（包含容量和长度）。
+其他的像str，共享引用（如可以指向任意大小的[u8]切片的 &[u8]) 是非固定大小的，这一类是属于大小不确定的集合，属于非固定大小的类型。
+还有一类是说对特型的实现。其他多数语言我们接口，特型是共享行为的抽象，到了具体要怎么实现，这个是不确定的，所以通常这里也是非固定大小的类型。
+
+Rust不能在变量中存储非固定大小的值，也不能将其作为参数。这时候往往是需要通过一些如&str 或 Box<T> 这样本身是固定大小的指针先指向它们，再对它们进行使用。这一类的指针始终是Fat pointer，占两个字宽，包含了指向切片的指针和切片的长度。特型目标也包含一个指向方法实现的虚拟表的指针。
+
+Rust隐式的将泛型变量限制为使用Sized类型。当我们写 `struct some_struct<T> { --snip-- }` ，Rust会将其理解为 `struct some_struct<T: Sized> { --snip-- }` 
+
+#### Clone
+
+克隆一个值通常涉及创建该值所拥有一切内容的副本和可能存在的内存分配（如clone_from在原始的堆缓冲区如果有足够的容量可以满足需求的话，往往无需分配或释放内存）。
+
+定义：
+
+```rust
+// std::clone::Clone
+trait Clone: Sized {
+	fn clone(&self) -> Self;
+	fn clone_from(&mut self, source: &Self) {
+	  *self = source.clone()
+	}
+}
+```
+
+原始类型bool和i32实现了Clone，容器类型String, Vec<T> 和HashMap也实现了Clone。
+
+#### Copy
+
+往往赋值会转移值，并不是复制值。转移值更有利于跟踪变量所拥有的资源。例外的是，不拥有任何资源的简单类型可以是Copy类型，这种类型的赋值会生成值的副本，而不是转移值并让原始变量变成未初始化。
+
+标记特型（std::marker::Copy)，定义：
+
+```rust
+trait Copy: clone{} 
+```
+
+实现
+
+```
+impl Copy for MyType{ }
+```
+
+Rust只允许类型在字节对字节的深度复制能够满足要求的情况下实现Copy。对于一些拥有任意资源的如OS句柄，不能实现Copy，冲突的特型有Drop，当需要标明一种特别的清理代码的方式的时候，也应该需要一种特别的Copy的方法。
+
+#### Cache Multiple Calls
+
+对runtime storage的调用通常会有一些额外的开销，应该尽量减少使用，这个时候我们就可以通过使用上面的一些trait来实现。
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as StorageCache {
+        // copy type
+        SomeCopyValue get(fn some_copy_value): u32;
+
+        // clone type
+        KingMember get(fn king_member): T::AccountId;
+        GroupMembers get(fn group_members): Vec<T::AccountId>;
+    }
+}
+```
+
+#### Copy Types
+
+对于Copy类型，我们直接复用值即可，下面展示一段冗余的代码
+
+```rust
+fn increase_value_no_cache(origin, some_val: u32) -> DispatchResult {
+    let _ = ensure_signed(origin)?;
+    let original_call = <SomeCopyValue>::get();
+    let some_calculation = original_call.checked_add(some_val).ok_or("addition overflowed1")?;
+    // 这个调用时不需要的，我们浪费了一次对runtime的调用
+    let unnecessary_call = <SomeCopyValue>::get();
+    // u32实现了copy，这个里面我们直接用上一个变量中储存的值即可
+    let another_calculation = some_calculation.checked_add(unnecessary_call).ok_or("addition overflowed2")?;
+    <SomeCopyValue>::put(another_calculation);
+    let now = <system::Module<T>>::block_number();
+    Self::deposit_event(RawEvent::InefficientValueChange(another_calculation, now));
+    Ok(())
+}
+```
+
+正确的写法应该更正为
+
+```rust
+fn increase_value_w_copy(origin, some_val: u32) -> DispatchResult {
+    let _ = ensure_signed(origin)?;
+    let original_call = <SomeCopyValue>::get();
+    let some_calculation = original_call.checked_add(some_val).ok_or("addition overflowed1")?;
+    // 这里直接使用copy的值即可
+    let another_calculation = some_calculation.checked_add(original_call).ok_or("addition overflowed2")?;
+    <SomeCopyValue>::put(another_calculation);
+    let now = <system::Module<T>>::block_number();
+    Self::deposit_event(RawEvent::BetterValueChange(another_calculation, now));
+    Ok(())
+}
+```
+
+#### Clone Types
+
+如果类型不是Copy，我们使用的Clone的代价也要小于调用runtime存储的代价
+
+```rust
+fn swap_king_with_cache(origin) -> DispatchResult {
+    let new_king = ensure_signed(origin)?;
+    let existing_king = <KingMember<T>>::get();
+    // prefer to clone previous call rather than repeat call unnecessarily
+    let old_king = existing_king.clone();
+
+    // only places a new account if
+    // (1) the existing account is not a member &&
+    // (2) the new account is a member
+    ensure!(!Self::is_member(&existing_king), "current king is a member so maintains priority");
+    ensure!(Self::is_member(&new_king), "new king is not a member so doesn't get priority");
+
+    // <no (unnecessary) storage call here>
+    // place new king
+    <KingMember<T>>::put(new_king.clone());
+
+    Self::deposit_event(RawEvent::BetterKingSwap(old_king, new_king));
+    Ok(())
+}
+```
+
+简单的说，我们可以通过rust的语言机制来减少对runtime storage的调用。
