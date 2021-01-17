@@ -526,3 +526,77 @@ fn remove_group_score(origin, group: GroupIndex) -> DispatchResult {
 }
 ```
 
+### 存储struct
+
+#### 声明
+
+```rust
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+pub struct MyStruct {
+    some_number: u32,
+    optional_number: Option<u32>,
+}
+```
+
+这里面使用derive派生的一些接口有些要手动实现。使用Encode和Decode要导入包`use frame_support::codec::{Encode, Decode};`
+
+#### 使用泛型
+
+我们可以将其中的字段使用泛型来声明，
+
+```rust
+#[derive(Encode, Decode, Clone, Default, RuntimeDebug)]
+pub struct InnerThing<Hash, Balance> {
+    number: u32,
+    hash: Hash,
+    balance: Balance,
+}
+```
+
+这里我们可以使用type关键字来起别名
+
+```rust
+type InnerThingOf<T> = InnerThing<<T as system::Trait>::Hash, <T as balances::Trait>::Balance>;
+```
+
+#### 存储中的struct
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as NestedStructs {
+        InnerThingsByNumbers get(fn inner_things_by_numbers):
+            map hasher(blake2_128_concat) u32 => InnerThingOf<T>;
+        SuperThingsBySuperNumbers get(fn super_things_by_super_numbers):
+            map hasher(blake2_256) u32 => SuperThing<T::Hash, T::Balance>;
+    }
+}
+```
+
+同样的方式我们可以将结构体作为一个map的值来进行存储
+
+```rust
+fn insert_inner_thing(origin, number: u32, hash: T::Hash, balance: T::Balance) -> DispatchResult {
+    let _ = ensure_signed(origin)?;
+    let thing = InnerThing {
+                    number,
+                    hash,
+                    balance,
+                };
+    <InnerThingsByNumbers<T>>::insert(number, thing);
+    Self::deposit_event(RawEvent::NewInnerThing(number, hash, balance));
+    Ok(())
+}
+```
+
+#### 嵌套结构体
+
+和其他语言类似，内嵌的结构体中的泛型也要加上
+
+```rust
+#[derive(Encode, Decode, Default, RuntimeDebug)]
+pub struct SuperThing<Hash, Balance> {
+    super_number: u32,
+    inner_thing: InnerThing<Hash, Balance>,
+}
+```
+
