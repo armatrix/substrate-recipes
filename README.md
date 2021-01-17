@@ -360,3 +360,131 @@ fn swap_king_with_cache(origin) -> DispatchResult {
 ```
 
 简单的说，我们可以通过rust的语言机制来减少对runtime storage的调用。
+
+### Set
+
+没有内置的Set结构，这里我们分别通过Vector和 Map来实现
+
+比如说我们现在有一个需求，来确保说链上的某一类型的账户最多有多少个
+
+```rust
+// 这里我们定义一个上限，最多有16个用户，并提供一些函数，如增加账户，删除账户，来保证这个数据的合法性，下面分别通过vector和map来实现
+pub const MAX_MEMBERS: u32 = 16;
+```
+
+#### Vector
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as VecSet {
+        // 一个存储AccountId的集合
+        Members get(fn members): Vec<T::AccountId>;
+    }
+}
+```
+
+这里我们说为了提高查找效率，我们保证Vec是有序的，这样方便我们使用二分查找
+
+##### 增加账户
+
+```rust
+pub fn add_member(origin) -> DispatchResult {
+    let new_member = ensure_signed(origin)?;
+
+    let mut members = Members::<T>::get();
+    ensure!(members.len() < MAX_MEMBERS, Error::<T>::MembershipLimitReached);
+
+    // 二分查找来判断账户是否已经存在，复杂度 O(log n).
+    match members.binary_search(&new_member) {
+        // 如果找到了，直接返回账户已经存在的错误
+        Ok(_) => Err(Error::<T>::AlreadyMember.into()),
+        // 没有找到的话，说明账户还不存在，这个时候插入这个账户
+        Err(index) => {
+            members.insert(index, new_member.clone());
+            Members::<T>::put(members);
+            Self::deposit_event(RawEvent::MemberAdded(new_member));
+            Ok(())
+        }
+    }
+}
+```
+
+##### 删除账户
+
+```rust
+fn remove_member(origin) -> DispatchResult {
+    let old_member = ensure_signed(origin)?;
+
+    let mut members = Members::<T>::get();
+
+    // 这里面的逻辑仍然是，我们先查找这个账户是否存在
+    match members.binary_search(&old_member) {
+        // 找到了就删除
+        Ok(index) => {
+            members.remove(index);
+            Members::<T>::put(members);
+            Self::deposit_event(RawEvent::MemberRemoved(old_member));
+            Ok(())
+        },
+        // 账户不存在的逻辑
+        Err(_) => Err(Error::<T>::NotMember.into()),
+    }
+}
+```
+
+#### Map
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as VecMap {
+        // 存储所有账户的集合
+        Members get(fn members): map hasher(blake2_128_concat) T::AccountId => ();
+        // 这个里面因为map并不存储本身的长度，对元素的个数我们额外使用一个字段来存储
+        MemberCount: u32;
+    }
+}
+```
+
+##### 增加账户
+
+```rust
+fn add_member(origin) -> DispatchResult {
+    let new_member = ensure_signed(origin)?;
+
+    let member_count = MemberCount::get();
+    ensure!(member_count < MAX_MEMBERS, Error::<T>::MembershipLimitReached);
+
+    //  O(1)
+    ensure!(!Members::<T>::contains_key(&new_member), Error::<T>::AlreadyMember);
+
+    // 新增账户
+    Members::<T>::insert(&new_member, ());
+    MemberCount::put(member_count + 1); //注意这里的上限
+    Self::deposit_event(RawEvent::MemberAdded(new_member));
+    Ok(())
+}
+```
+
+##### 删除账户
+
+```rust
+fn remove_member(origin) -> DispatchResult {
+    let old_member = ensure_signed(origin)?;
+
+    ensure!(Members::<T>::contains_key(&old_member), Error::<T>::NotMember);
+
+    Members::<T>::remove(&old_member);
+    MemberCount::mutate(|v| *v -= 1);
+    Self::deposit_event(RawEvent::MemberRemoved(old_member));
+    Ok(())
+}
+```
+
+#### 性能对比
+
+|            | Vector实现                                     | Map实现                                        |
+| ---------- | ---------------------------------------------- | ---------------------------------------------- |
+| 查找       | DB Reads: O(1) Decoding: O(n) Search: O(log n) | DB Reads: O(1)                                 |
+| 更新       | DB Writes: O(1) Encoding: O(n)                 | DB Reads: O(1) Encoding: O(1) DB Writes: O(1)  |
+| 迭代器操作 | DB Reads: O(1) Decoding: O(n) Processing: O(n) | DB Reads: O(n) Decoding: O(n) Processing: O(n) |
+
