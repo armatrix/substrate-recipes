@@ -718,11 +718,86 @@ where
 }
 ```
 
+### Basic Token 
 
+在BTC的UTXO之后，基于账户余额的账本技术较为常见，本质上是将其描述为状态转换函数：APPLY (State, Transaction) -> NewState。 
 
+这里我们假定我们构建一个账户到余额的映射关系，模拟一个系统，系统总发行token数我们通过硬编码来固定，发行的方式暂定为谁第一个调用我们的初始化函数，那么这些token就归谁。
 
+#### Storage Item
 
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Token {
+        // 某个账户下的余额
+        pub Balances get(get_balance): map hasher(blake2_128_concat) T::AccountId => u64;
+				// 总供给
+        pub TotalSupply get(total_supply): u64 = 21000000;
+				// 是否初始化
+        Init get(is_init): bool;
+    }
+}
+```
 
+#### Events and Errors
 
+```rust
+decl_event!(
+    pub enum Event<T>
+    where
+        AccountId = <T as system::Trait>::AccountId,
+    {
+        // token被初始化
+        Initialized(AccountId),
+        // 在两个用户间转账成功
+        Transfer(AccountId, AccountId, u64), // (from, to, value)
+    }
+);
 
+decl_error! {
+    pub enum Error for Module<T: Trait> {
+        // 已经有人调用了初始化的函数
+        AlreadyInitialized,
+        // 转账失败
+        InsufficientFunds,
+    }
+}
+```
+
+#### 初始token
+
+可以考虑下其他的一些初始方式（genesis config, claims process, lockdrop etc.)
+
+```rust
+fn init(origin) -> DispatchResult {
+	let sender = ensure_signed(origin)?;
+	ensure!(!Self::is_init(), <Error<T>>::AlreadyInitialized);
+
+	<Balances<T>>::insert(sender, Self::total_supply());
+
+	Init::put(true);
+	Ok(())
+}
+```
+
+#### 转账
+
+```rust
+fn transfer(_origin, to: T::AccountId, value: u64) -> DispatchResult {
+    let sender = ensure_signed(_origin)?;
+    let sender_balance = Self::get_balance(&sender);
+    let receiver_balance = Self::get_balance(&to);
+
+    // 计算两方余额，注意这里的错误处理，对一些可能导致的panic情况我们要处理好
+    let updated_from_balance = sender_balance.checked_sub(value).ok_or(<Error<T>>::InsufficientFunds)?;
+    let updated_to_balance = receiver_balance.checked_add(value).expect("Entire supply fits in u64; qed");
+
+    // 更新状态树
+    <Balances<T>>::insert(&sender, updated_from_balance);
+    <Balances<T>>::insert(&to, updated_to_balance);
+
+    Self::deposit_event(RawEvent::Transfer(sender, to, value));
+    Ok(())
+}
+```
 
