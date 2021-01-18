@@ -1045,3 +1045,131 @@ fn dispense(origin, index: FundIndex) {
 
 ```
 
+### 可实例化的pallet
+
+当我们需要在一条链上发行两种独立的加密货币；或者说某个用户作为买卖双方，我们想单独记录他作为买方和卖方的信用；以及对链的治理需要多个表现相似的治理方时，我们就可以创建这种pallet，这种pallet的创建和创建普通的pallet基本一样，其中 `decl_storage!` 这个必须要写，只有这样，实例对象才能被创建 ，注意下runtime中的写法。
+
+substrate提供了一个例子，下面两个实例有自己的空间，包括存储、配置、事件等等
+
+```rust
+Council: collective::<Instance1>::{Module, Call, Storage, Origin<T>, Event<T>, Config<T>},
+TechnicalCommittee: collective::<Instance2>::{Module, Call, Storage, Origin<T>, Event<T>, Config<T>}
+```
+
+#### Config Trait
+
+首先还是定义 configuration trait
+
+```rust
+pub trait Trait<I: Instance>: system::Trait {
+    type Event: From<Event<Self, I>> + Into<<Self as system::Trait>::Event>;
+}
+```
+
+#### 定义存储
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait<I>, I: Instance> as TemplatePallet {
+        ...
+    }
+}
+```
+
+#### 定义事件
+
+```rust
+decl_event!(
+    pub enum Event<T, I> where AccountId = <T as system::Trait>::AccountId {
+        ...
+    }
+}
+```
+
+#### 定义Module Struct
+
+```rust
+decl_module! {
+ 		// 别忘记初始化事件
+  	fn deposit_event() = default;
+ 
+    pub struct Module<T: Trait<I>, I: Instance> for enum Call where origin: T::Origin {
+        ...
+    }
+}
+```
+
+#### runtime更改
+
+每一个pallet实例都要单独实现（这不废话吗）,类似下面这样
+
+```rust
+impl template::Trait<template::Instance1> for Runtime {
+    type Event = Event;
+}
+```
+
+`construct_runtime!` 宏中的修改
+
+```rust
+FirstTemplate: template::<Instance1>::{Module, Call, Storage, Event<T>, Config},
+```
+
+#### 默认实例
+
+可实例化的pallet的一个缺点是说，当我们仅需要一个实例的时候，这种开发范式不太友好，目前为止我们接触的都是这种，实际上当我们要指定一个具体的实例时，只需要对四个部分进行声明即可
+
+```rust
+pub trait Trait<I=DefaultInstance>: system::Trait {}
+```
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait<I>, I: Instance=DefaultInstance> as TemplateModule {
+        ...
+    }
+}
+```
+
+```rust
+decl_module! {
+    pub struct Module<T: Trait<I>, I: Instance = DefaultInstance> for enum Call where origin: T::Origin {
+        ...
+    }
+}
+```
+
+```rust
+decl_event!(
+    pub enum Event<T, I=DefaultInstance> where ... {
+        ...
+    }
+}
+```
+
+实现上述步骤之后，可以像使用其它的pallet那样使用它
+
+#### 创世配置
+
+一些pallet需要一些创世的配置，参照下面的实现（substrate node Collective pallet's chan_spec.rs）
+
+```rust
+GenesisConfig {
+    ...
+    collective_Instance1: Some(CouncilConfig {
+        members: vec![],
+        phantom: Default::default(),
+    }),
+    collective_Instance2: Some(TechnicalCommitteeConfig {
+        members: vec![],
+        phantom: Default::default(),
+    }),
+    ...
+}
+```
+
+
+
+## TODO
+
+默认实例问题
