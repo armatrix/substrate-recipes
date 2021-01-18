@@ -897,3 +897,151 @@ fn add_value(origin, val_to_add: u32) -> DispatchResult {
 }
 ```
 
+### 众筹
+
+这里展示一个链上众筹的功能。任何人都可以发起一个众筹活动，在一定时间内筹集一定的资金，到期未筹集到指定的资金额，这笔钱再退回到原有的账户中
+
+#### 配置的约束trait
+
+```rust
+// pallet 的配置trait
+pub trait Trait: system::Trait {
+    /// The ubiquious Event type
+    type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+
+    /// The currency in which the crowdfunds will be denominated
+    type Currency: ReservableCurrency<Self::AccountId>;
+
+    //
+    type SubmissionDeposit: Get<BalanceOf<Self>>;
+
+    // 众筹参与者提交的最小额度
+    type MinContribution: Get<BalanceOf<Self>>;
+
+    // 
+    type RetirementPeriod: Get<Self::BlockNumber>;
+}
+```
+
+#### 抽象数据结构
+
+```rust
+#[derive(Encode, Decode, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct FundInfo<AccountId, Balance, BlockNumber> {
+    // 众筹成功后用来接收的账户
+    beneficiary: AccountId,
+    // 抵押的总额
+    deposit: Balance,
+    // 众筹的总额
+    raised: Balance,
+    // 时间单位
+    end: BlockNumber,
+    /// Upper bound on `raised`
+    goal: Balance,
+}
+```
+
+简单的定义几个类型别名
+
+```
+pub type FundIndex = u32;
+
+type AccountIdOf<T> = <T as system::Trait>::AccountId;
+type BalanceOf<T> = <<T as Trait>::Currency as Currency<AccountIdOf<T>>>::Balance;
+type FundInfoOf<T> = FundInfo<AccountIdOf<T>, BalanceOf<T>, <T as system::Trait>::BlockNumber>;
+```
+
+#### 存储
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as ChildTrie {
+        // 获取资金的信息
+        Funds get(fn funds):
+            map hasher(blake2_128_concat) FundIndex => Option<FundInfoOf<T>>;
+
+        // 众筹金额的笔数
+        FundCount get(fn fund_count): FundIndex;
+
+        // 额外的一些信息我们存储在 child trie 中，相比于我们默认的存储方式， child trie在处理删除或是需要证明（通过Merkle Proof）的时候会有优势
+        // 可以查看下面的 impl<T: Trait> Module<T>
+    }
+}
+```
+
+#### API
+
+```rust
+// 增加新记录
+pub fn contribution_put(index: FundIndex, who: &T::AccountId, balance: &BalanceOf<T>) {
+    let id = Self::id_from_index(index);
+    who.using_encoded(|b| child::put(&id, b, &balance));
+}
+
+// 查看某比筹款所在的trie
+pub fn contribution_get(index: FundIndex, who: &T::AccountId) -> BalanceOf<T> {
+    let id = Self::id_from_index(index);
+    who.using_encoded(|b| child::get_or_default::<BalanceOf<T>>(&id, b))
+}
+
+// 从child trie中删除一组关联的筹款
+pub fn contribution_kill(index: FundIndex, who: &T::AccountId) {
+    let id = Self::id_from_index(index);
+    who.using_encoded(|b| child::kill(&id, b));
+}
+
+// 从child trie中删除所有关联的筹款
+pub fn crowdfund_kill(index: FundIndex) {
+    let id = Self::id_from_index(index);
+    child::kill_storage(&id);
+}
+
+// 通过捐献资金的id来生成唯一的childInfo
+pub fn id_from_index(index: FundIndex) -> child::ChildInfo {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"crowdfnd");
+    buf.extend_from_slice(&index.to_le_bytes()[..]);
+
+    child::ChildInfo::new_default(T::Hashing::hash(&buf[..]).as_ref())
+}
+```
+
+#### Pallet Dispatchables
+
+和其他的实现一样，这里依然是要做些像权限、边界的检查，和存储做一些交互，最后广播事件。这里要注意下激励的一些设置
+
+```rust
+#[weight = 10_000]
+fn dispense(origin, index: FundIndex) {
+    let caller = ensure_signed(origin)?;
+
+    let fund = Self::funds(index).ok_or(Error::<T>::InvalidIndex)?;
+
+    // 对众筹条件的检查
+  
+  	// 规定时间是否完成
+    let now = <system::Module<T>>::block_number();
+    ensure!(now >= fund.end, Error::<T>::FundStillActive);
+
+    // 资金是否筹集成功
+    ensure!(fund.raised >= fund.goal, Error::<T>::UnsuccessfulFund);
+    let account = Self::fund_account_id(index);
+
+    // 众筹条件满足后的一些逻辑
+    let _ = T::Currency::resolve_creating(&fund.beneficiary, T::Currency::withdraw(
+        &account,
+        fund.raised,
+        WithdrawReasons::from(WithdrawReason::Transfer),
+        ExistenceRequirement::AllowDeath,
+    )?);
+
+    let _ = T::Currency::resolve_creating(&caller, T::Currency::withdraw(
+        &account,
+        fund.deposit,
+        WithdrawReasons::from(WithdrawReason::Transfer),
+        ExistenceRequirement::AllowDeath,
+    )?);
+
+```
+
