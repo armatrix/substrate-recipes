@@ -833,17 +833,17 @@ decl_module! {
 
 #### 示例
 
-我们声明一个存储单一值的，通过我们的runtime中的配置来约束它，给它一个初始化的方法，让它每隔若干个块就清零，再给他一个可以增加任意值的方法
+我们声明一个存储单一值的，通过我们的runtime中的配置来约束它的最大大小，给它一个初始化的方法，让它每隔若干个块就清零，再给他一个可以增加任意值的方法。也就是说，在以出块为时间单位的一段时间内，每隔一些块，它的最大值会有个上限
 
 ##### 配置
 
 首先我们要在runtime中做相应的配置
 
 ```rust
-#![allow(unused)]
-fn main() {
 parameter_types! {
+  	// 允许的最大值
     pub const MaxAddend: u32 = 1738;
+    // 清除的频率
     pub const ClearFrequency: u32 = 10;
 }
 
@@ -851,7 +851,6 @@ impl constant_config::Trait for Runtime {
     type Event = Event;
     type MaxAddend = MaxAddend;
     type ClearFrequency = ClearFrequency;
-}
 }
 
 ```
@@ -887,7 +886,7 @@ fn add_value(origin, val_to_add: u32) -> DispatchResult {
 
     let current_value = <SingleValue>::get();
 
-    // 检查溢出
+    // 检查
     let result = match current_value.checked_add(val_to_add) {
         Some(r) => r,
         None => return Err(DispatchError::Other("addition overflowed")),
