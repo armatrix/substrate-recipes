@@ -801,3 +801,100 @@ fn transfer(_origin, to: T::AccountId, value: u64) -> DispatchResult {
 }
 ```
 
+### 常量设置
+
+通常对整个系统而言的常量通常我们称之为元信息的一部分，需要在runtime中设置，在不同的pallet中使用时，需要像下面这样使用
+
+```rust
+use frame_support::traits::Get;
+
+pub trait Trait: system::Trait {
+    type Event: From<Event> + Into<<Self as system::Trait>::Event>;
+
+    // 我们在trait中对两个配置项进行约束
+    type MaxAddend: Get<u32>;
+    type ClearFrequency: Get<Self::BlockNumber>;
+}
+```
+
+为了能在runtime的元信息中展示，在 `decl_module!` 宏中，我们通常将类似的的声明写在如下的位置
+
+```rust
+decl_module! {
+    pub struct Module<T: Trait> for enum Call where origin: T::Origin {
+        fn deposit_event() = default;
+				// 紧跟着event
+        const MaxAddend: u32 = T::MaxAddend::get();
+        const ClearFrequency: T::BlockNumber = T::ClearFrequency::get();
+        // --snip--
+    }
+}
+```
+
+#### 示例
+
+我们声明一个存储单一值的，通过我们的runtime中的配置来约束它，给它一个初始化的方法，让它每隔若干个块就清零，再给他一个可以增加任意值的方法
+
+##### 配置
+
+首先我们要在runtime中做相应的配置
+
+```rust
+#![allow(unused)]
+fn main() {
+parameter_types! {
+    pub const MaxAddend: u32 = 1738;
+    pub const ClearFrequency: u32 = 10;
+}
+
+impl constant_config::Trait for Runtime {
+    type Event = Event;
+    type MaxAddend = MaxAddend;
+    type ClearFrequency = ClearFrequency;
+}
+}
+
+```
+
+##### 实现
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        SingleValue get(fn single_value): u32;
+    }
+}
+```
+
+初始化
+
+```rust
+fn on_finalize(n: T::BlockNumber) {
+    if (n % T::ClearFrequency::get()).is_zero() {
+        let c_val = <SingleValue>::get();
+        <SingleValue>::put(0u32);
+        Self::deposit_event(Event::Cleared(c_val));
+    }
+}
+```
+
+增加任意值的方法
+
+```rust
+fn add_value(origin, val_to_add: u32) -> DispatchResult {
+    let _ = ensure_signed(origin)?;
+    ensure!(val_to_add <= T::MaxAddend::get(), "value must be <= maximum add amount constant");
+
+    let current_value = <SingleValue>::get();
+
+    // 检查溢出
+    let result = match current_value.checked_add(val_to_add) {
+        Some(r) => r,
+        None => return Err(DispatchError::Other("addition overflowed")),
+    };
+    <SingleValue>::put(result);
+    Self::deposit_event(Event::Added(current_value, val_to_add, result));
+    Ok(())
+}
+```
+
