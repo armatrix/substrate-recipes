@@ -2213,6 +2213,38 @@ pub fn slash_funds(origin, to_punish: T::AccountId, collateral: BalanceOf<T>) {
 }
 ```
 
+### 随机性
+
+这块话题还不小，这里的话我们通过内置的一些包来简单的使用下，后面再来拓展展开区块链系统中的随机性问题
+
+trait 约束
+
+```rust
+pub trait Trait: system::Trait {
+    type Event: From<Event> + Into<<Self as system::Trait>::Event>;
+
+    type RandomnessSource: Randomness<H256>;
+}
+```
+
+简单实用
+
+```rust
+fn consume_randomness(origin) -> DispatchResult {
+    let _ = ensure_signed(origin)?;
+  
+    let subject = Self::encode_and_update_nonce();
+
+    let random_seed = T::RandomnessSource::random_seed();
+    let random_result = T::RandomnessSource::random(&subject);
+
+    Self::deposit_event(Event::RandomnessConsumed(random_seed, random_result));
+    Ok(())
+ }
+```
+
+这里可以引申VRF
+
 ## TODO
 
 默认实例问题
