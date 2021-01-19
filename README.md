@@ -1168,8 +1168,76 @@ GenesisConfig {
 }
 ```
 
+### 量化资源
+
+这里我们说在我们构建一个pallet时，我们要注意对可调用的一些函数所消耗的代价的考量。不能较低成本的无限制的调用，这样极可能造成对网络的恶意攻击，设置合理的区间是很有必要的。
+
+可以通过注解很方便的来设置权重
+
+```rust
+#[weight = <Some Weighting Instance>]
+fn some_call(...) -> Result {
+    // --snip--
+}
+```
+
+如果我们需要给其设置一个固定数值的权重，这个就比较简单
+
+```rust
+decl_module! {
+    pub struct Module<T: Trait> for enum Call {
+
+        #[weight = 10_000]
+        fn store_value(_origin, entry: u32) -> DispatchResult {
+            StoredValue::put(entry);
+            Ok(())
+        }
+}
+```
+
+其它的一些动态的需求，比如说我们想通过调用时入参的字节数或其它的某种规则来设置的话，需要自己实现。下面的例子我们通过对调用时入参的检测来调整权重。
+
+##### 自定义权重
+
+```rust
+pub struct Conditional(u32);
+
+impl WeighData<(&bool, &u32)> for Conditional {
+    fn weigh_data(&self, (switch, val): (&bool, &u32)) -> Weight {
+        if *switch {
+            val.saturating_mul(self.0)
+        } else {
+            self.0
+        }
+    }
+}
+```
+
+##### 实现trait约束
+
+自定义权重需要实现两个trait：ClassifyDispatch 和 PaysFee
+
+```rust
+impl<T> ClassifyDispatch<T> for Conditional {
+    fn classify_dispatch(&self, _: T) -> DispatchClass {
+        // 这个里面走默认的逻辑 
+        Default::default()
+    }
+}
+```
+
+```rust
+impl PaysFee for Conditional {
+    fn pays_fee(&self) -> bool {
+        true
+    }
+}
+```
+
 
 
 ## TODO
 
 默认实例问题
+
+weight接口
