@@ -1540,6 +1540,59 @@ fn value_of_continuous_account(now: &<T as system::Trait>::BlockNumber) -> I32F3
 }
 ```
 
+### Off-chain Workers
+
+这块字面比较容易理解，交易这块还ok，其它的比如说和微信支付的一些交互之类的，实现上比如说我改了host，或者说需要对端提供一个幂等的操作之类的东西才能验证的时候该如何做呢？
+
+先看下他这块的实现
+
+#### Transactions
+
+```shell
+# 切换到该目录
+cd nodes/kitchen-node
+
+# 编译 OCW feature
+cargo build --release --features ocw
+```
+
+这样在我们的[`nodes/kitchen-node/src/service.rs`](https://github.com/substrate-developer-hub/recipes/blob/master/nodes/kitchen-node/src/service.rs) 注入了账户的key
+
+```rust
+// 初始化用于离线签名用的种子
+#[cfg(feature = "ocw")]
+{
+    keystore.write().insert_ephemeral_from_seed_by_type::<runtime::offchain_demo::crypto::Pair>(
+        "//Alice", runtime::offchain_demo::KEY_TYPE
+    ).expect("Creating key with account Alice should succeed.");
+}
+```
+
+#### 离线工作机的声明周期
+
+启动之后我们会看到这样的现实
+
+```shell
+Jan 19 19:58:14.436  INFO Kitchen Node
+Jan 19 19:58:14.436  INFO ✌️  version 2.0.0-2f7b217-x86_64-macos
+Jan 19 19:58:14.436  INFO ❤️  by Substrate DevHub <https://github.com/substrate-developer-hub>, 2019-2021
+Jan 19 19:58:14.436  INFO 📋 Chain specification: Local Testnet
+Jan 19 19:58:14.436  INFO 🏷  Node name: literate-suggestion-9160
+Jan 19 19:58:14.436  INFO 👤 Role: FULL
+Jan 19 19:58:14.436  INFO 💾 Database: RocksDb at /var/folders/2s/ryztw28123zf9bz8xyy7q28w0000gn/T/substratezSjwSx/chains/local_testnet/db
+Jan 19 19:58:14.436  INFO ⛓  Native runtime: ocw-runtime-1 (ocw-runtime-1.tx1.au1)
+Jan 19 19:58:14.501  INFO 🔨 Initializing Genesis block/state (state: 0xed6a…2a51, header-hash: 0xa1d7…7fe9)
+Jan 19 19:58:14.506  WARN Using default protocol ID "sup" because none is configured in the chain specs
+Jan 19 19:58:14.506  INFO 🏷  Local node identity is: 12D3KooWC2CcWmEmTrYTeNcDef99pwCyWLFDW77v3XCvjeD3DBNL (legacy representation: 12D3KooWC2CcWmEmTrYTeNcDef99pwCyWLFDW77v3XCvjeD3DBNL)
+Jan 19 19:58:14.508  INFO 📦 Highest known block at #0
+Jan 19 19:58:14.508  INFO 〽️ Prometheus server started at 127.0.0.1:9615
+Jan 19 19:58:14.511  INFO Listening for new connections on 127.0.0.1:9944.
+Jan 19 19:58:16.227  INFO Accepted a new tcp connection from 127.0.0.1:59528.
+Jan 19 19:58:19.512  INFO 💤 Idle (0 peers), best: #0 (0xa1d7…7fe9), finalized #0 (0xa1d7…7fe9), ⬇ 0 ⬆ 0
+```
+
+
+
 ## TODO
 
 默认实例问题
