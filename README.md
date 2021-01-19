@@ -1998,6 +1998,80 @@ fn fetch_n_parse() -> Result<GithubInfo, Error<T>> {
 }
 ```
 
+#### 本地存储
+
+多个链下工作机的存储机制，这个还蛮有意思的
+
+定义用于链下工作机的存储
+
+```rust
+fn fetch_github_info() -> Result<(), Error<T>> {
+    // 最好是和pallet同名，作为pallet下的链下工作机
+    let s_info = StorageValueRef::persistent(b"offchain-demo::gh-info");
+    // ...
+}
+```
+
+提供了`get`, `set`,和`mutate`的API，这里我们通过`mutate`来展示
+
+先检查是否调用过
+
+```rust
+fetch_github_info() -> Result<(), Error<T>> {
+    // ...
+    if let Some(Some(gh_info)) = s_info.get::<GithubInfo>() {
+        // gh-info has already been fetched. Return early.
+        debug::info!("cached gh-info: {:?}", gh_info);
+        return Ok(());
+    }
+    // ...
+}
+```
+
+全局🔒
+
+```rust
+fn fetch_if_needed() -> Result<(), Error<T>> {
+    // 一致性保证
+    // ref: https://substrate.dev/rustdocs/v2.0.0-rc3/sp_runtime/offchain/storage_lock/index.html
+    //
+    // 四种🔒，两个维度，time and block
+    //   1) `new` - 锁有默认的过期时间
+    //   2) `with_deadline` - 默认区块数，自定义时间的
+    //   3) `with_block_deadline` - 默认时间，自定义区块数
+    //   4) `with_block_and_time_deadline` - 两者均为自定义
+   
+    let mut lock = StorageLock::<BlockAndTime<Self>>::with_block_and_time_deadline(
+        b"offchain-demo::lock",
+        LOCK_BLOCK_EXPIRATION,
+        rt_offchain::Duration::from_millis(LOCK_TIMEOUT_EXPIRATION)
+    );
+		
+  	// 尝试获取🔒，失败的话说明有其它的OCW在处理相关的逻辑，这里直接return
+    // ref: https://substrate.dev/rustdocs/v2.0.0-rc3/sp_runtime/offchain/storage_lock/struct.StorageLock.html#method.try_lock
+    if let Ok(_guard) = lock.try_lock() {
+        // fetching logic here ...
+    }
+    //...
+}
+```
+
+锁到期后获取
+
+```rust
+fn fetch_if_needed() -> Result<(), Error<T>> {
+    // _guard 离开作用域，释放🔒 这里可以说下生命周期在锁机制的好处
+    if let Ok(_guard) = lock.try_lock() {
+        match Self::fetch_n_parse() {
+            Ok(gh_info) => { s_info.set(&gh_info); }
+            Err(err) => { return Err(err); }
+        }
+    }
+
+    Ok(())
+}
+```
+
 ## TODO
 
 默认实例问题
