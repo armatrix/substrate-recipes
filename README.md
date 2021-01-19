@@ -1568,9 +1568,9 @@ cargo build --release --features ocw
 }
 ```
 
-#### 离线工作机的声明周期
+#### 链下工作机的声明周期
 
-启动之后我们会看到这样的现实
+启动之后我们会看到这样的日志输出
 
 ```shell
 Jan 19 19:58:14.436  INFO Kitchen Node
@@ -1591,7 +1591,310 @@ Jan 19 19:58:16.227  INFO Accepted a new tcp connection from 127.0.0.1:59528.
 Jan 19 19:58:19.512  INFO 💤 Idle (0 peers), best: #0 (0xa1d7…7fe9), finalized #0 (0xa1d7…7fe9), ⬇ 0 ⬆ 0
 ```
 
+这个时候我们一些交互端做一笔转账交易会发现输出类似下面的的日志
 
+```shell
+Jan 19 22:35:20.585  INFO 💤 Idle (0 peers), best: #0 (0x1522…c718), finalized #0 (0x1522…c718), ⬇ 0 ⬆ 0
+Jan 19 22:35:22.463  INFO 🙌 Starting consensus session on top of parent 0x1522a4803b5df88931cfb7342bd24a75cfed14009d117dd8eda53f90b3cac718
+Jan 19 22:35:22.470  INFO 🎁 Prepared block for proposing at 1 [hash: 0x1efe38107a0b3e84b6d75416514ef3f08114b604460ef5e35968714b36484d3b; parent_hash: 0x1522…c718; extrinsics (2): [0x3ef3…85cc, 0xb5e2…3ee7]]
+Jan 19 22:35:22.473  INFO ✨ Imported #1 (0x1efe…4d3b)
+Jan 19 22:35:22.473  INFO Instant Seal success: CreatedBlock { hash: 0x1efe38107a0b3e84b6d75416514ef3f08114b604460ef5e35968714b36484d3b, aux: ImportedAux { header_only: false, clear_justification_requests: false, needs_justification: false, bad_justification: false, needs_finality_proof: false, is_new_best: true } }
+Jan 19 22:35:22.474  INFO Entering off-chain worker
+Jan 19 22:35:22.478  INFO 🙌 Starting consensus session on top of parent 0x1efe38107a0b3e84b6d75416514ef3f08114b604460ef5e35968714b36484d3b
+```
+
+顾名思义，链下工作机所执行的处理逻辑是脱离链的，逻辑处理完成后需要再次通过链上来记录结果，可以传递给链上的结果包含三部分。
+
+#### 发送签名交易
+
+src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
+
+##### 定义签名的模块
+
+```rust
+// 用来做签名
+pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"demo");
+
+pub mod crypto {
+    use crate::KEY_TYPE;
+    use sp_runtime::app_crypto::{app_crypto, sr25519};
+    // -- snip --
+    app_crypto!(sr25519, KEY_TYPE);
+}
+```
+
+##### 配置trait
+
+```rust
+pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
+    // 用以标识链下工作及
+    type AuthorityId: AppCrypto<Self::Public, Self::Signature>;
+    // -- snip --
+}
+```
+
+##### runtime实现链下工作机的trait
+
+src: [`runtimes/ocw-runtime/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/runtimes/ocw-runtime/src/lib.rs)
+
+定义需要签名的内容
+
+```rust
+// 签名的内容
+pub type SignedExtra = (
+    frame_system::CheckSpecVersion<Runtime>,
+    frame_system::CheckTxVersion<Runtime>,
+    frame_system::CheckGenesis<Runtime>,
+    frame_system::CheckEra<Runtime>,
+    frame_system::CheckNonce<Runtime>,
+    frame_system::CheckWeight<Runtime>,
+    pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
+);
+```
+
+实现签名交易需要实现三个trait
+
+- `frame_system::offchain::CreateSignedTransaction`
+- `frame_system::offchain::SigningTypes`
+- `frame_system::offchain::SendTransactionTypes`
+
+```rust
+impl<LocalCall> frame_system::offchain::CreateSignedTransaction<LocalCall> for Runtime
+where
+    Call: From<LocalCall>,
+{
+    fn create_transaction<C: frame_system::offchain::AppCrypto<Self::Public, Self::Signature>>(
+        call: Call,
+        public: <Signature as sp_runtime::traits::Verify>::Signer,
+        account: AccountId,
+        index: Index,
+    ) -> Option<(
+        Call,
+        <UncheckedExtrinsic as sp_runtime::traits::Extrinsic>::SignaturePayload,
+    )> {
+        let period = BlockHashCount::get() as u64;
+        let current_block = System::block_number()
+            .saturated_into::<u64>()
+            .saturating_sub(1);
+        let tip = 0;
+        let extra: SignedExtra = (
+            frame_system::CheckTxVersion::<Runtime>::new(),
+            frame_system::CheckGenesis::<Runtime>::new(),
+            frame_system::CheckEra::<Runtime>::from(generic::Era::mortal(period, current_block)),
+            frame_system::CheckNonce::<Runtime>::from(index),
+            frame_system::CheckWeight::<Runtime>::new(),
+            pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(tip),
+        );
+
+        #[cfg_attr(not(feature = "std"), allow(unused_variables))]
+        let raw_payload = SignedPayload::new(call, extra)
+            .map_err(|e| {
+                debug::native::warn!("SignedPayload error: {:?}", e);
+            })
+            .ok()?;
+
+        let signature = raw_payload.using_encoded(|payload| C::sign(payload, public))?;
+
+        let address = account;
+        let (call, extra, _) = raw_payload.deconstruct();
+        Some((call, (address, signature, extra)))
+    }
+}
+```
+
+```rust
+impl frame_system::offchain::SigningTypes for Runtime {
+    type Public = <Signature as sp_runtime::traits::Verify>::Signer;
+    type Signature = Signature;
+}
+```
+
+```rust
+impl<C> frame_system::offchain::SendTransactionTypes<C> for Runtime
+where
+    Call: From<C>,
+{
+    type OverarchingCall = Call;
+    type Extrinsic = UncheckedExtrinsic;
+}
+```
+
+至此，所有的约束均已实现
+
+##### 发送交易
+
+src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
+
+```rust
+fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+		// 因为我们通过dev指定的只有一个签名方，可以通过下面函数获取，如果有其它的更多的，需要通过 `with_filter()`来获取更多的操作
+		//   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.Signer.html
+		let signer = Signer::<T, T::AuthorityId>::any_account();
+
+		let number: u64 = block_number.try_into().unwrap_or(0) as u64;
+
+		// `result` 的类型为 `Option<(Account<T>, Result<(), ()>)>`.
+		//   - `None`: 没有任何账户足以发送此交易
+		//   - `Some((account, Ok(())))`: 交易发送成功
+		//   - `Some((account, Err(())))`: 交易发送失败
+		let result = signer.send_signed_transaction(|_acct|
+			// 调用链上函数
+			Call::submit_number_signed(number)
+		);
+
+		// debug
+		if let Some((acc, res)) = result {
+      // 发送失败
+			if res.is_err() {
+				debug::error!("failure: offchain_signed_tx: tx sent: {:?}", acc.id);
+				return Err(<Error<T>>::OffchainSignedTxError);
+			}
+			// 发送成功
+			return Ok(());
+		}
+
+		// 没有任何账户能够实现此笔交易
+		debug::error!("No local account available");
+		Err(<Error<T>>::NoLocalAcctForSigning)
+	}
+```
+
+#### 发送未签名交易
+
+默认情况下是不允许的，实现这种需要我们来实现一些约束，更多的要考虑下这种的使用场景
+
+src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
+
+##### 实现未签名交易的trait
+
+```rust
+impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
+    type Call = Call<T>;
+
+    fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+        let valid_tx = |provide| ValidTransaction::with_tag_prefix("ocw-demo")
+            .priority(T::UnsignedPriority::get()) 
+            .and_provides([&provide]) 
+            .longevity(3)  
+            .propagate(true)
+            .build();
+
+        match call {
+            Call::submit_number_unsigned(_number) => valid_tx(b"submit_number_unsigned".to_vec()),
+            // -- snip --
+            _ => InvalidTransaction::Call.into(),
+        }
+    }
+}
+```
+
+这里我们可以看下valid transaction的定义
+
+src: https://github.com/paritytech/substrate/blob/master/primitives/runtime/src/transaction_validity.rs
+
+```rust
+#[derive(Clone, PartialEq, Eq, Encode, Decode, RuntimeDebug)]
+pub struct ValidTransaction {
+	// 优先级
+	pub priority: TransactionPriority,
+	// 这里最好是结合一些具体的例子
+	pub requires: Vec<TransactionTag>,
+	// 参照实现的tag
+	pub provides: Vec<TransactionTag>,
+	// 用于验证的最小交易周期
+	pub longevity: TransactionLongevity,
+	// 该事务是否需要传播
+	pub propagate: bool,
+}
+```
+
+##### runtime中的实现
+
+src: [`runtimes/ocw-runtime/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/runtimes/ocw-runtime/src/lib.rs)
+
+```rust
+construct_runtime!(
+    pub enum Runtime where
+        Block = Block,
+        NodeBlock = opaque::Block,
+        UncheckedExtrinsic = UncheckedExtrinsic
+    {
+        //...snip
+        OcwDemo: ocw_demo::{Module, Call, Storage, Event<T>, ValidateUnsigned},
+    }
+);
+```
+
+##### 发送交易
+
+```rust
+fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+    let number: u64 = block_number.try_into().unwrap_or(0) as u64;
+    let call = Call::submit_number_unsigned(number);
+
+    // `submit_unsigned_transaction` returns a type of `Result<(), ()>`
+    //   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
+    SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+        .map_err(|_| {
+            debug::error!("Failed in offchain_unsigned_tx");
+            <Error<T>>::OffchainUnsignedTxError
+        })
+}
+```
+
+#### 将签名内容作为未签名交易的一部分
+
+这里最大的区别是，不会向签名人收取交易费用。我们将一笔交易签名后作为未签名交易发布，通过构造上面的valid transaction的结构进行对交易的合法性检测
+
+src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
+
+##### 发送的结构定义及trait实现
+
+```rust
+#[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
+pub struct Payload<Public> {
+    number: u64,
+    public: Public
+}
+
+// 发送的内容要实现这个trait
+impl <T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
+    fn public(&self) -> T::Public {
+        self.public.clone()
+    }
+}
+```
+
+##### 将签名内容作为未签名交易的一部分进行交易
+
+```rust
+fn offchain_unsigned_tx_signed_payload(block_number: T::BlockNumber) -> Result<(), Error<T>> {
+
+    let signer = Signer::<T, T::AuthorityId>::any_account();
+
+    let number: u64 = block_number.try_into().unwrap_or(0) as u64;
+
+    // `send_unsigned_transaction` 返回 `Option<(Account<T>, Result<(), ()>)>`.
+    // 同发送签名交易一样
+		//   - `None`: 没有任何账户足以发送此交易
+		//   - `Some((account, Ok(())))`: 交易发送成功
+		//   - `Some((account, Err(())))`: 交易发送失败
+    if let Some((_, res)) = signer.send_unsigned_transaction(
+      // 注意这里的闭包
+      |acct| Payload { number, public: acct.public.clone() },
+        Call::submit_number_unsigned_with_signed_payload
+    ) {
+        return res.map_err(|_| {
+            debug::error!("Failed in offchain_unsigned_tx_signed_payload");
+            <Error<T>>::OffchainUnsignedTxSignedPayloadError
+        });
+    }
+
+   	// 没有任何账户能够实现此笔交易
+    debug::error!("No local account available");
+    Err(<Error<T>>::NoLocalAcctForSigning)
+}
+```
 
 ## TODO
 
