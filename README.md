@@ -1304,7 +1304,241 @@ impl<T: Trait> OnUnbalanced<NegativeImbalanceOf<T>> for Module<T> {
 }
 ```
 
+### 定点运算
 
+很难避免的就是定点数的计算，这里通过对substrate内置的定点数的结构和trait、内置的库和我们自己手动实现，结合实例做个对比，来说明为什么我们尽量要使用底层提供的库来执行相关的操作
+
+#### Multiplicative Accumulators
+
+##### Permill Accumulator
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        // --snip--
+
+      	// 这里可以多做下解释
+        PermillAccumulator get(fn permill_value): Permill = Permill::one();
+    }
+}
+```
+
+```rust
+fn update_permill(origin, new_factor: Permill) -> DispatchResult {
+    ensure_signed(origin)?;
+
+    let old_accumulated = Self::permill_value();
+
+    // [0, 1] 永远不可能溢出，无需检测
+    let new_product = old_accumulated.saturating_mul(new_factor);
+
+    PermillAccumulator::put(new_product);
+
+    Self::deposit_event(Event::PermillUpdated(new_factor, new_product));
+    Ok(())
+}
+```
+
+#### Substrate-fixed Accumulator
+
+讲的啥东西
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        // --snip--
+
+        /// Substrate-fixed accumulator, value starts at 1 (multiplicative identity)
+        FixedAccumulator get(fn fixed_value): U16F16 = U16F16::from_num(1);
+    }
+}
+```
+
+```rust
+fn update_fixed(origin, new_factor: U16F16) -> DispatchResult {
+    ensure_signed(origin)?;
+
+    let old_accumulated = Self::fixed_value();
+
+    // 乘法 检查溢出
+    let new_product = old_accumulated.checked_mul(new_factor)
+        .ok_or(Error::<T>::Overflow)?;
+
+    FixedAccumulator::put(new_product);
+
+    Self::deposit_event(Event::FixedUpdated(new_factor, new_product));
+    Ok(())
+}
+```
+
+#### Manual Accumulator
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        // --snip--
+
+        /// Manual accumulator, value starts at 1 (multiplicative identity)
+        ManualAccumulator get(fn manual_value): u32 = 1 << 16;
+    }
+}
+```
+
+```rust
+fn update_manual(origin, new_factor: u32) -> DispatchResult {
+    ensure_signed(origin)?;
+
+    let old_accumulated : u64 = Self::manual_value() as u64;
+    let new_factor_u64 : u64 = new_factor as u64;
+
+    let raw_product : u64 = old_accumulated * new_factor_u64;
+
+    let shifted_product : u64 = raw_product >> 16;
+
+    if shifted_product > (u32::max_value() as u64) {
+        return Err(Error::<T>::Overflow.into())
+    }
+
+    ManualAccumulator::put(shifted_product as u32);
+
+    Self::deposit_event(Event::ManualUpdated(new_factor, shifted_product as u32));
+    Ok(())
+}
+```
+
+上面着几个对照着看下就好了，这个逻辑类似我们在计组里定点数那块的逻辑。使用对应的库即可，有兴趣可以自行研究
+
+#### 复利
+
+复利的结算在借贷这种业务中比较常见
+
+##### 离散复利
+
+这里我们模拟一个离散复利的计算，每隔若干块（这里是每十个）计算一次
+
+定义存储
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        // --snip--
+
+        // 账户的余额
+        DiscreteAccount get(fn discrete_account): u64;
+    }
+}
+```
+
+更新的api
+
+```rust
+fn deposit_discrete(origin, val_to_add: u64) -> DispatchResult {
+    ensure_signed(origin)?;
+
+    let old_value = DiscreteAccount::get();
+
+    // 更新
+    DiscreteAccount::put(old_value + val_to_add);
+
+    Self::deposit_event(Event::DepositedDiscrete(val_to_add));
+    Ok(())
+}
+```
+
+
+
+```rust
+fn on_finalize(n: T::BlockNumber) {
+    if (n % 10.into()).is_zero() {
+
+        // 计算利息
+        let interest = Self::discrete_interest_rate() * DiscreteAccount::get() * 10;
+
+       	// 下面这个不生效，Percent对象没有实现 Mul<u64> trait，注意这个里面的要实现才能用类似交换律的逻辑，
+      	// 可以引申介绍下rust的这块的逻辑
+        // let interest = DiscreteAccount::get() * Self::discrete_interest_rate() * 10;
+
+        // 更新余额
+        let old_balance = DiscreteAccount::get();
+        DiscreteAccount::put(old_balance + interest);
+
+        Self::deposit_event(Event::DiscreteInterestApplied(interest));
+    }
+}
+```
+
+##### 连续复利
+
+类似的需求让我们实现下连续复利
+
+```rust
+#[derive(Encode, Decode, Default)]
+pub struct ContinuousAccountData<BlockNumber> {
+    // 最近一次手动调整后的账户余额
+    principal: I32F32,
+    // 最近一次手动调整的区块数
+    deposit_date: BlockNumber,
+}
+```
+
+定义存储
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as Example {
+        // --snip--
+
+        // 账户余额
+        ContinuousAccount get(fn balance_compound): ContinuousAccountData<T::BlockNumber>;
+    }
+}
+```
+
+更新的api
+
+```rust
+// 这块的逻辑就是根据我们定义的上次更新的一些参数来做调整
+fn deposit_continuous(origin, val_to_add: u64) -> DispatchResult {
+    ensure_signed(origin)?;
+
+    let current_block = system::Module::<T>::block_number();
+    let old_value = Self::value_of_continuous_account(&current_block);
+
+    ContinuousAccount::<T>::put(
+        ContinuousAccountData {
+            principal: old_value + I32F32::from_num(val_to_add),
+            deposit_date: current_block,
+        }
+    );
+
+    Self::deposit_event(Event::DepositedContinuous(val_to_add));
+    Ok(())
+}
+```
+
+余额
+
+```rust
+fn value_of_continuous_account(now: &<T as system::Trait>::BlockNumber) -> I32F32 {
+    // 账户之前的状态
+    let ContinuousAccountData{
+        principal,
+        deposit_date,
+    } = ContinuousAccount::<T>::get();
+
+    // 复利的具体计算
+    let elapsed_time_block_number = *now - deposit_date;
+    let elapsed_time_u32 = TryInto::try_into(elapsed_time_block_number)
+        .expect("blockchain will not exceed 2^32 blocks; qed");
+    let elapsed_time_i32f32 = I32F32::from_num(elapsed_time_u32);
+    let exponent : I32F32 = Self::continuous_interest_rate() * elapsed_time_i32f32;
+    let exp_result : I32F32 = exp(exponent)
+        .expect("Interest will not overflow account (at least not until the learner has learned enough about fixed point :)");
+
+    // 返回当前block number下的本金和利息 interest = principal * e ^ (rate * time)
+    principal * exp_result
+}
+```
 
 ## TODO
 
