@@ -2072,8 +2072,137 @@ fn fetch_if_needed() -> Result<(), Error<T>> {
 }
 ```
 
+### 货币类型
+
+#### 基础货币
+
+```rust
+use frame_support::traits::Currency;
+```
+
+基础货币中的trait提供了可互换资产（ fungible asset）的功能
+
+```rust
+pub trait Trait: system::Trait {
+    type Currency: Currency<Self::AccountId>;
+}
+```
+
+关联类型后会提供一些方法，参考 [`Currency`](https://substrate.dev/rustdocs/v2.0.0/frame_support/traits/trait.Currency.html).如下面返回系统的总发行量
+
+```rust
+// 在 decl_module！
+T::Currency::total_issuance();
+```
+
+在runtime中也可以通过别名来使用
+
+```rust
+type BalanceOf<T> = <<T as Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::Balance;
+```
+
+#### 可保留货币
+
+这种在比如说开发激励，债券这种场景下比较有用
+
+##### 导包及trait约束
+
+```rust
+use frame_support::traits::{Currency, ReservableCurrency};
+
+pub trait Trait: system::Trait {
+    type Currency: Currency<Self::AccountId> + ReservableCurrency<Self::AccountId>;
+}
+```
+
+##### 解锁和释放
+
+关联函数就是 `reserve` 和 `unreserve`， 参考下面两个实现
+
+```rust
+pub fn reserve_funds(origin, amount: BalanceOf<T>) -> DispatchResult {
+    let locker = ensure_signed(origin)?;
+
+    T::Currency::reserve(&locker, amount)
+            .map_err(|_| "locker can't afford to lock the amount requested")?;
+
+    let now = <system::Module<T>>::block_number();
+
+    Self::deposit_event(RawEvent::LockFunds(locker, amount, now));
+    Ok(())
+}
+```
+
+```rust
+pub fn unreserve_funds(origin, amount: BalanceOf<T>) -> DispatchResult {
+    let unlocker = ensure_signed(origin)?;
+
+    T::Currency::unreserve(&unlocker, amount);
+
+    let now = <system::Module<T>>::block_number();
+
+    Self::deposit_event(RawEvent::UnlockFunds(unlocker, amount, now));
+    Ok(())
+}
+```
+
+#### 可锁定资金
+
+这个使用场景比较多，触发强制执行之类的操作，罚金之类都可以
+
+```rust
+use frame_support::traits::{LockIdentifier, LockableCurrency}
+```
+
+定义一个标识符
+
+```rust
+const EXAMPLE_ID: LockIdentifier = *b"example ";
+```
+
+锁定资产
+
+```rust
+fn lock_capital(origin, amount: BalanceOf<T>) -> DispatchResult {
+    let user = ensure_signed(origin)?;
+
+    T::Currency::set_lock(
+        EXAMPLE_ID,
+        &user,
+        amount,
+        WithdrawReasons::except(WithdrawReason::TransactionPayment),
+    );
+
+    Self::deposit_event(RawEvent::Locked(user, amount));
+    Ok(())
+}
+```
+
+#### Imbalances
+
+发生铸币等情况时，对系统所造成的影响要注意
+
+```rust
+pub fn reward_funds(origin, to_reward: T::AccountId, reward: BalanceOf<T>) {
+    let _ = ensure_signed(origin)?;
+
+    let mut total_imbalance = <PositiveImbalanceOf<T>>::zero();
+
+    let r = T::Currency::deposit_into_existing(&to_reward, reward).ok();
+    total_imbalance.maybe_subsume(r);
+    T::Reward::on_unbalanced(total_imbalance);
+
+    let now = <system::Module<T>>::block_number();
+    Self::deposit_event(RawEvent::RewardFunds(to_reward, reward, now));
+}
+```
+
 ## TODO
 
 默认实例问题
 
 weight接口
+
+ T::Currency::unreserve（）
+
+Imbalances
