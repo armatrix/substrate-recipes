@@ -1568,7 +1568,7 @@ cargo build --release --features ocw
 }
 ```
 
-#### 链下工作机的声明周期
+##### 链下工作机的声明周期
 
 启动之后我们会看到这样的日志输出
 
@@ -1605,11 +1605,11 @@ Jan 19 22:35:22.478  INFO 🙌 Starting consensus session on top of parent 0x1ef
 
 顾名思义，链下工作机所执行的处理逻辑是脱离链的，逻辑处理完成后需要再次通过链上来记录结果，可以传递给链上的结果包含三部分。
 
-#### 发送签名交易
+##### 发送签名交易
 
 src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
 
-##### 定义签名的模块
+###### 定义签名的模块
 
 ```rust
 // 用来做签名
@@ -1623,7 +1623,7 @@ pub mod crypto {
 }
 ```
 
-##### 配置trait
+###### 配置trait
 
 ```rust
 pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
@@ -1633,7 +1633,7 @@ pub trait Trait: system::Trait + CreateSignedTransaction<Call<Self>> {
 }
 ```
 
-##### runtime实现链下工作机的trait
+###### runtime实现链下工作机的trait
 
 src: [`runtimes/ocw-runtime/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/runtimes/ocw-runtime/src/lib.rs)
 
@@ -1721,7 +1721,7 @@ where
 
 至此，所有的约束均已实现
 
-##### 发送交易
+###### 发送交易
 
 src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
 
@@ -1759,13 +1759,13 @@ fn offchain_signed_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
 	}
 ```
 
-#### 发送未签名交易
+##### 发送未签名交易
 
 默认情况下是不允许的，实现这种需要我们来实现一些约束，更多的要考虑下这种的使用场景
 
 src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
 
-##### 实现未签名交易的trait
+###### 实现未签名交易的trait
 
 ```rust
 impl<T: Trait> frame_support::unsigned::ValidateUnsigned for Module<T> {
@@ -1808,7 +1808,7 @@ pub struct ValidTransaction {
 }
 ```
 
-##### runtime中的实现
+###### runtime中的实现
 
 src: [`runtimes/ocw-runtime/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/runtimes/ocw-runtime/src/lib.rs)
 
@@ -1825,7 +1825,7 @@ construct_runtime!(
 );
 ```
 
-##### 发送交易
+###### 发送交易
 
 ```rust
 fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
@@ -1842,13 +1842,13 @@ fn offchain_unsigned_tx(block_number: T::BlockNumber) -> Result<(), Error<T>> {
 }
 ```
 
-#### 将签名内容作为未签名交易的一部分
+##### 将签名内容作为未签名交易的一部分
 
 这里最大的区别是，不会向签名人收取交易费用。我们将一笔交易签名后作为未签名交易发布，通过构造上面的valid transaction的结构进行对交易的合法性检测
 
 src: [`pallets/ocw-demo/src/lib.rs`](https://github.com/substrate-developer-hub/recipes/tree/master/pallets/ocw-demo/src/lib.rs)
 
-##### 发送的结构定义及trait实现
+###### 发送的结构定义及trait实现
 
 ```rust
 #[derive(Encode, Decode, Clone, PartialEq, Eq, RuntimeDebug)]
@@ -1865,7 +1865,7 @@ impl <T: SigningTypes> SignedPayload<T> for Payload<T::Public> {
 }
 ```
 
-##### 将签名内容作为未签名交易的一部分进行交易
+###### 将签名内容作为未签名交易的一部分进行交易
 
 ```rust
 fn offchain_unsigned_tx_signed_payload(block_number: T::BlockNumber) -> Result<(), Error<T>> {
@@ -1893,6 +1893,108 @@ fn offchain_unsigned_tx_signed_payload(block_number: T::BlockNumber) -> Result<(
    	// 没有任何账户能够实现此笔交易
     debug::error!("No local account available");
     Err(<Error<T>>::NoLocalAcctForSigning)
+}
+```
+
+#### Http的接口操作
+
+链下工作机的结果这里我们通过http来取回结果，使用json来进行数据交互
+
+##### 发送请求
+
+```rust
+// 初始化一个外部的请求
+let request = rt_offchain::http::Request::get(HTTP_REMOTE_REQUEST);
+
+// timeout
+let timeout = sp_io::offchain::timestamp()
+    .add(rt_offchain::Duration::from_millis(FETCH_TIMEOUT_PERIOD));
+
+// 发送请求
+let pending = request
+    .add_header("User-Agent", HTTP_HEADER_USER_AGENT)
+    .deadline(timeout) 
+    .send() 
+    .map_err(|_| <Error<T>>::HttpFetchingError)?; // 在这里检查可能出现的发送时错误
+
+// 到时获取结果
+// 返回类型注意下
+//   ref: https://substrate.dev/rustdocs/v2.0.0/sp_runtime/offchain/http/struct.PendingRequest.html#method.try_wait
+let response = pending
+    .try_wait(timeout)
+    .map_err(|_| <Error<T>>::HttpFetchingError)?
+    .map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+if response.code != 200 {
+    debug::error!("Unexpected http request status code: {}", response.code);
+    return Err(<Error<T>>::HttpFetchingError);
+}
+
+// 存储结果
+Ok(response.body().collect::<Vec<u8>>())
+```
+
+##### Json转换
+
+###### 引入依赖
+
+这里我们主要是用了serde` and `serde-json 这两个包，但有些功能是标准库的，我们在饮用的时候要注意
+
+```toml
+alt_serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = { version = "1", default-features = false, git = "https://github.com/Xanewok/json", branch = "no-std", features = ["alloc"] }
+```
+
+###### 反序列化
+
+导入依赖并自定义序列化函数
+
+```rust
+// 使用 `alt_serde`, Xanewok修改过的 `serde_json`我们可以同时使用 with serde(features `std`) and alt_serde(features `no_std`).
+use alt_serde::{Deserialize, Deserializer};
+
+// 这里将原本默认的String 转成 vector的字节数组 
+pub fn de_string_to_bytes<'de, D>(de: D) -> Result<Vec<u8>, D::Error>
+where D: Deserializer<'de> {
+    let s: &str = Deserialize::deserialize(de)?;
+    Ok(s.as_bytes().to_vec())
+}
+```
+
+定义相应的结构用来反序列化
+
+```rust
+//  `alt_serde`依赖指向
+// ref: https://serde.rs/container-attrs.html#crate
+#[serde(crate = "alt_serde")]
+#[derive(Deserialize, Encode, Decode, Default)]
+struct GithubInfo {
+    // 使用我们上面声明的转换函数
+    #[serde(deserialize_with = "de_string_to_bytes")]
+    login: Vec<u8>,
+    #[serde(deserialize_with = "de_string_to_bytes")]
+    blog: Vec<u8>,
+    public_repos: u32,
+}
+```
+
+反序列化
+
+```rust
+// 将响应反序列化到结构体中
+fn fetch_n_parse() -> Result<GithubInfo, Error<T>> {
+    let resp_bytes = Self::fetch_from_remote()
+        .map_err(|e| {
+            debug::error!("fetch_from_remote error: {:?}", e);
+            <Error<T>>::HttpFetchingError
+        })?;
+
+    let resp_str = str::from_utf8(&resp_bytes)
+        .map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+    // Deserializing JSON to struct, thanks to `serde` and `serde_derive`
+    let gh_info: GithubInfo = serde_json::from_str(&resp_str).unwrap();
+    Ok(gh_info)
 }
 ```
 
