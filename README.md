@@ -1,4 +1,4 @@
-# substrate-recipes
+### substrate-recipes
 
 ## 前置知识
 
@@ -1230,6 +1230,76 @@ impl<T> ClassifyDispatch<T> for Conditional {
 impl PaysFee for Conditional {
     fn pays_fee(&self) -> bool {
         true
+    }
+}
+```
+
+### Charity and Imbalances
+
+这里通过一个官方的示例向我们展示如何通过一个pallet来控制一笔资金（通过捐款获得）以及如何与链上资金的状态（发生铸币或销毁等）关联起来
+
+#### Instantiate a pot
+
+这里有个类似资金池的概念，管理这笔资金我们不在与个人的公私钥来关联，而是直接和pallet关联，需要导入 `sp-runtime` 下的 `ModuleId` 和 `AccountIdConversion`
+
+```rust
+use sp-runtime::{ModuleId, traits::AccountIdConversion};
+```
+
+导入该依赖后，我们声明一个八个字符长度的`Pallet_ID`作为资金池的表示，之所以对其限制时为了让后面我们可以通过调用特定的方法（`AccountIdConversion` trait 中的 `into_account()`）来生成 `AccountID`
+
+```rust
+const PALLET_ID: ModuleId = ModuleId(*b"Charity!");
+
+impl<T: Trait> Module<T> {
+  	//  管理资金的账户
+    pub fn account_id() -> T::AccountId {
+        PALLET_ID.into_account()
+    }
+
+    // 余额
+    fn pot() -> BalanceOf<T> {
+        T::Currency::free_balance(&Self::account_id())
+    }
+}
+```
+
+#### Receiving Funds
+
+我们的资金池可以通过两种方式来获得资金
+
+##### Donations
+
+第一种就是普通的捐款，一笔简单的转账交易
+
+```rust
+fn donate( origin, amount: BalanceOf<T>) -> DispatchResult {
+        let donor = ensure_signed(origin)?;
+
+        let _ = T::Currency::transfer(&donor, &Self::account_id(), amount, AllowDeath);
+
+        Self::deposit_event(RawEvent::DonationReceived(donor, amount, Self::pot()));
+        Ok(())
+}
+```
+
+##### Imbalances
+
+第二种是说我们假定发生了铸币、销毁等影响总体货币平衡的情况下，所采取的措施。可能会存在一种治理的机制来对这样的资金进行操作。可以参考下
+
+```rust
+use frame_support::traits::{OnUnbalanced, Imbalance};
+type NegativeImbalanceOf<T> = <<T as Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::NegativeImbalance;
+
+impl<T: Trait> OnUnbalanced<NegativeImbalanceOf<T>> for Module<T> {
+    fn on_nonzero_unbalanced(amount: NegativeImbalanceOf<T>) {
+        let numeric_amount = amount.peek();
+
+        // Must resolve into existing but better to be safe.
+      	// 这里可以扩展讲一下
+        let _ = T::Currency::resolve_creating(&Self::account_id(), amount);
+
+        Self::deposit_event(RawEvent::ImbalanceAbsorbed(numeric_amount, Self::pot()));
     }
 }
 ```
