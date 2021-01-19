@@ -2178,9 +2178,11 @@ fn lock_capital(origin, amount: BalanceOf<T>) -> DispatchResult {
 }
 ```
 
-#### Imbalances
+#### 货币供给问题
 
-发生铸币等情况时，对系统所造成的影响要注意
+发生铸币等情况时，对系统所造成的影响要注意。 这块的逻辑多思考下，感觉不太合理
+
+奖励资金
 
 ```rust
 pub fn reward_funds(origin, to_reward: T::AccountId, reward: BalanceOf<T>) {
@@ -2194,6 +2196,20 @@ pub fn reward_funds(origin, to_reward: T::AccountId, reward: BalanceOf<T>) {
 
     let now = <system::Module<T>>::block_number();
     Self::deposit_event(RawEvent::RewardFunds(to_reward, reward, now));
+}
+```
+
+削减资金
+
+```rust
+pub fn slash_funds(origin, to_punish: T::AccountId, collateral: BalanceOf<T>) {
+    let _ = ensure_signed(origin)?;
+
+    let imbalance = T::Currency::slash_reserved(&to_punish, collateral).0;
+    T::Slash::on_unbalanced(imbalance);
+
+    let now = <system::Module<T>>::block_number();
+    Self::deposit_event(RawEvent::SlashFunds(to_punish, collateral, now));
 }
 ```
 
