@@ -2245,6 +2245,68 @@ fn consume_randomness(origin) -> DispatchResult {
 
 这里可以引申VRF
 
+## Runtime
+
+### APIs
+
+这里有必要展示下架构图，然后再介绍。
+
+每个substrate的Node都包含一个runtime。定义了核心的业务逻辑，交易是否合法以及当交易发生了，状态该如何改变。runtime会编译成WASM方便升级。runtime之外的我们称之为“outer node”，不会被编译成WASM，只会被编译成本地二进制文件。主要负责节点的发现、交易池、块和交易的广播、共识、响应远程调用等。这里介绍一个简单的示例。
+
+我们准备一个求和的功能
+
+```rust
+decl_storage! {
+    trait Store for Module<T: Trait> as TemplateModule {
+        Thing1 get(fn thing1): Option<u32>;
+        Thing2 get(fn thing2): Option<u32>;
+    }
+}
+```
+
+实现trait
+
+```rust
+impl<T: Trait> Module<T> {
+    pub fn get_sum() -> u32 {
+        Thing1::get() + Thing2::get()
+    }
+}
+```
+
+通常我们会在对应的目录下构建，如这里的runtimes/api-runtime/src/lib.rs
+
+```rust
+sp_api::decl_runtime_apis! {
+    pub trait SumStorageApi {
+        fn get_sum() -> u32;
+    }
+}
+```
+
+实现API
+
+主要是在[`impl_runtime_apis!`](https://substrate.dev/rustdocs/v2.0.0/sp_api/macro.impl_runtime_apis.html)宏中实现， 包括一些参数的声明
+
+```rust
+impl_runtime_apis! {
+  // --snip--
+
+  impl sum_storage_rpc_runtime_api::SumStorageApi<Block> for Runtime {
+        fn get_sum() -> u32 {
+            SumStorage::get_sum()
+        }
+    }
+}
+
+```
+
+#### 调用
+
+```rust
+let sum_at_block_fifty = client.runtime_api().get_sum(&50);
+```
+
 ## TODO
 
 默认实例问题
