@@ -2307,6 +2307,119 @@ impl_runtime_apis! {
 let sum_at_block_fifty = client.runtime_api().get_sum(&50);
 ```
 
+### 交易费
+
+交易费用怎么样去设定，按字节还是不同函数调用的权重，这里介绍一个简单的示例。按照线性关系去计算
+
+```rust
+total_fee = transaction_length * length_fee + weight_to_fee(total_weight)
+```
+
+#### 参数设定
+
+这里给个简单的例子，并自己实现计算交易费的方式
+
+```rust
+parameter_types! {
+    pub const TransactionByteFee: u128 = 1;
+}
+
+impl transaction_payment::Trait for Runtime {
+    type Currency = balances::Module<Runtime>;
+    type OnTransactionPayment = ();
+    type TransactionByteFee = TransactionByteFee;
+    type WeightToFee = IdentityFee<Balance>;
+    type FeeMultiplierUpdate = ();
+}
+```
+
+抽象结构体
+
+```
+pub struct LinearWeightToFee<C>(sp_std::marker::PhantomData<C>);
+```
+
+实现WeightToFeePolynomial trait
+
+```rust
+impl<C> WeightToFeePolynomial for LinearWeightToFee<C>
+where
+    C: Get<Balance>,
+{
+    type Balance = Balance;
+
+    fn polynomial() -> WeightToFeeCoefficients<Self::Balance> {
+      	// 这个结构体的构造要注意下
+        let coefficient = WeightToFeeCoefficient {
+            coeff_integer: C::get(),
+            coeff_frac: Perbill::zero(),
+            negative: false,
+            degree: 1,
+        };
+
+        smallvec!(coefficient)
+    }
+}
+```
+
+为runtime实现交易费用的trait
+
+```rust
+parameter_types! {
+    // 线性计算的系数
+    pub const FeeWeightRatio: u128 = 1_000;
+
+    // --snip--
+}
+
+impl transaction_payment::Trait for Runtime {
+  
+    type WeightToFee = LinearWeightToFee<FeeWeightRatio>;
+
+    // --snip--
+}
+```
+
+一个稍微复杂的实现
+
+```rust
+pub struct QuadraticWeightToFee;
+
+impl WeightToFeePolynomial for QuadraticWeightToFee {
+    type Balance = Balance;
+
+    fn polynomial() -> WeightToFeeCoefficients<Self::Balance> {
+        let linear = WeightToFeeCoefficient {
+            coeff_integer: 2,
+            coeff_frac: Perbill::from_percent(40),
+            negative: true,
+            degree: 1,
+        };
+        let quadratic = WeightToFeeCoefficient {
+            coeff_integer: 3,
+            coeff_frac: Perbill::zero(),
+            negative: false,
+            degree: 2,
+        };
+
+        smallvec![quadratic, linear]
+    }
+}
+```
+
+为runtime实现交易费用的trait
+
+```rust
+impl transaction_payment::Trait for Runtime {
+
+    type Currency = SpendingAssetCurrency<Self>;
+
+    // --snip--
+}
+```
+
+
+
 ## TODO
 
 默认实例问题
