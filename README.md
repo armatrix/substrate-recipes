@@ -2418,7 +2418,167 @@ impl transaction_payment::Trait for Runtime {
 }
 ```
 
+## 共识
 
+共识部分定义在我们的 outer node部分。
+
+### 哈希工作量共识算法
+
+这里我们简单实现一个SHA3的工作量共识的展示。
+
+### 整体逻辑展示
+
+抽象结构体
+
+```rust
+#[derive(Clone)]
+pub struct MinimalSha3Algorithm;
+```
+
+共识难度
+
+```rust
+impl<B: BlockT<Hash=H256>> PowAlgorithm<B> for Sha3Algorithm {
+    type Difficulty = U256;
+
+    fn difficulty(&self, _parent: &BlockId<B>) -> Result<Self::Difficulty, Error<B>> {
+        // 调整共识难度 ，当前为1_000_000
+        Ok(U256::from(1_000_000))
+    }
+
+    // --snip--
+}
+```
+
+验证
+
+```rust
+fn verify(
+    &self,
+    _parent: &BlockId<B>,
+    pre_hash: &H256,
+    _pre_digest: Option<&[u8]>,
+    seal: &RawSeal,
+    difficulty: Self::Difficulty
+) -> Result<bool, Error<B>> {
+    // 从原始字节流中构造密封对象
+    let seal = match Seal::decode(&mut &seal[..]) {
+        Ok(seal) => seal,
+        Err(_) => return Ok(false),
+    };
+
+    // 查看难度
+    if !hash_meets_difficulty(&seal.work, difficulty) {
+        return Ok(false)
+    }
+
+    // 拼装对象 
+    let compute = Compute {
+        difficulty,
+        pre_hash: *pre_hash,
+        nonce: seal.nonce,
+    };
+		
+  	// 查看是否符合条件
+    if compute.compute() != seal {
+        return Ok(false)
+    }
+
+    Ok(true)
+}
+```
+
+挖矿
+
+```rust
+fn mine(
+    &self,
+    _parent: &BlockId<B>,
+    pre_hash: &H256,
+    _pre_digest: Option<&[u8]>,
+    difficulty: Self::Difficulty,
+    round: u32 
+) -> Result<Option<RawSeal>, Error<B>> {
+    let mut rng = SmallRng::from_rng(&mut thread_rng())
+        .map_err(|e| Error::Environment(format!("Initialize RNG failed for mining: {:?}", e)))?;
+
+    for _ in 0..round {
+
+        let nonce = H256::random_using(&mut rng);
+
+        let compute = Compute {
+            difficulty,
+            pre_hash: *pre_hash,
+            nonce,
+        };
+        let seal = compute.compute();
+
+        // 查看是否挖矿成功
+        if hash_meets_difficulty(&seal.work, difficulty) {
+            return Ok(Some(seal.encode()))
+        }
+    }
+
+    Ok(None)
+}
+```
+
+### 实际的一种实现
+
+抽象一个结构体，这里要包含对客户端的引用
+
+```rust
+pub struct Sha3Algorithm<C> {
+    client: Arc<C>,
+}
+```
+
+构造函数
+
+```rust
+impl<C> Sha3Algorithm<C> {
+    pub fn new(client: Arc<C>) -> Self {
+        Self { client }
+    }
+}
+```
+
+实现clone trait
+
+```rust
+impl<C> Clone for Sha3Algorithm<C> {
+    fn clone(&self) -> Self {
+        Self::new(self.client.clone())
+    }
+}
+```
+
+定义难度约束
+
+```rust
+impl<B: BlockT<Hash=H256>, C> PowAlgorithm<B> for Sha3Algorithm<C> where
+    C: ProvideRuntimeApi<B>,
+    C::Api: DifficultyApi<B, U256>,
+{
+    type Difficulty = U256;
+
+    // --snip
+}
+```
+
+难度调整API
+
+```rust
+fn difficulty(&self, parent: B::Hash) -> Result<Self::Difficulty, Error<B>> {
+    let parent_id = BlockId::<B>::hash(parent);
+    self.client.runtime_api().difficulty(&parent_id)
+        .map_err(|e| sc_consensus_pow::Error::Environment(
+            format!("Fetching difficulty from runtime failed: {:?}", e)
+        ))
+}
+```
+
+验证和挖矿的算法和开始的demo类似
 
 ## TODO
 
